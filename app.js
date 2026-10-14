@@ -16,7 +16,8 @@ const CATEGORIAS = {
 const CAT_ICON = {
   'Alimentación': '🍽️', 'Transporte': '🚌', 'Vivienda': '🏠', 'Servicios': '💡', 'Salud': '🩺',
   'Entretenimiento': '🎬', 'Educación': '📚', 'Ropa': '👕', 'Otro': '📦',
-  'Salario': '💼', 'Freelance': '💻', 'Ventas': '🛍️', 'Regalo': '🎁'
+  'Salario': '💼', 'Freelance': '💻', 'Ventas': '🛍️', 'Regalo': '🎁',
+  'Préstamo dado': '🤝', 'Préstamo recibido': '🤝', 'Préstamo devuelto': '↩️', 'Préstamo pagado': '↩️'
 };
 
 /* ---------------- Utilidades ---------------- */
@@ -38,6 +39,14 @@ function formatMonthLabel(monthKey) {
   const d = new Date(Date.UTC(y, m - 1, 1));
   const txt = d.toLocaleDateString('es-NI', { month: 'long', year: 'numeric', timeZone: 'UTC' });
   return txt.charAt(0).toUpperCase() + txt.slice(1);
+}
+function daysFromToday(s) {
+  const a = parseDate(todayISO()), b = parseDate(s);
+  return Math.round((b - a) / 86400000);
+}
+function formatDateShort(s) {
+  const d = parseDate(s);
+  return d.toLocaleDateString('es-NI', { day: '2-digit', month: '2-digit', year: 'numeric', timeZone: 'UTC' });
 }
 function formatDateHuman(s) {
   const d = parseDate(s);
@@ -71,7 +80,7 @@ function saveState() { localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
 
 let state = loadState();
 
-const nav = { tab: 'movimientos', month: monthKeyOf(todayISO()), catTipo: 'gasto' };
+const nav = { tab: 'movimientos', month: monthKeyOf(todayISO()), catTipo: 'gasto', showHistorialPrestamos: false };
 
 /* ---------------- Cálculos ---------------- */
 
@@ -88,13 +97,23 @@ function saldoDisponible() {
   return state.movimientos.reduce((s, m) => s + (m.tipo === 'ingreso' ? m.monto : -m.monto), 0);
 }
 function desgloseCategorias(monthKey, tipo) {
-  const movs = movimientosDelMes(monthKey).filter(m => m.tipo === tipo);
+  const movs = movimientosDelMes(monthKey).filter(m => m.tipo === tipo && !m.prestamo);
   const map = {};
   movs.forEach(m => { map[m.categoria] = (map[m.categoria] || 0) + m.monto; });
   const total = Object.values(map).reduce((s, v) => s + v, 0);
   return Object.entries(map)
     .map(([categoria, monto]) => ({ categoria, monto, pct: total ? Math.round((monto / total) * 100) : 0 }))
     .sort((a, b) => b.monto - a.monto);
+}
+function prestamosPendientes() {
+  return state.movimientos
+    .filter(m => m.prestamo && !m.prestamo.esRetorno && m.prestamo.estado === 'pendiente')
+    .sort((a, b) => a.prestamo.fechaDevolucion.localeCompare(b.prestamo.fechaDevolucion));
+}
+function prestamosHistorial() {
+  return state.movimientos
+    .filter(m => m.prestamo && !m.prestamo.esRetorno && m.prestamo.estado === 'devuelto')
+    .sort((a, b) => b.fecha.localeCompare(a.fecha));
 }
 
 /* ---------------- Render raíz ---------------- */
@@ -116,10 +135,11 @@ function renderHome() {
     </div>
     <div class="tabs">
       <button class="tab ${nav.tab === 'movimientos' ? 'active' : ''}" data-action="tab" data-tab="movimientos">Movimientos</button>
+      <button class="tab ${nav.tab === 'prestamos' ? 'active' : ''}" data-action="tab" data-tab="prestamos">Préstamos</button>
       <button class="tab ${nav.tab === 'categorias' ? 'active' : ''}" data-action="tab" data-tab="categorias">Por categoría</button>
     </div>
     <div class="content">
-      ${nav.tab === 'movimientos' ? renderMovimientosTab(t, saldo) : renderCategoriasTab()}
+      ${nav.tab === 'movimientos' ? renderMovimientosTab(t, saldo) : nav.tab === 'prestamos' ? renderPrestamosTab() : renderCategoriasTab()}
       <div class="footer-note">Tus datos se guardan solo en este teléfono.</div>
     </div>
     <button class="fab" data-action="new-mov" aria-label="Nuevo movimiento">+</button>
@@ -154,14 +174,64 @@ function renderMovimientosTab(t, saldo) {
 function movRowHTML(m) {
   const icon = CAT_ICON[m.categoria] || (m.tipo === 'ingreso' ? '💰' : '💳');
   const bg = m.tipo === 'ingreso' ? 'var(--success-bg)' : 'var(--danger-bg)';
+  const prestamoLine = (m.prestamo && !m.prestamo.esRetorno)
+    ? `<div class="meta">${m.prestamo.estado === 'pendiente' ? estadoPrestamoTexto(m.prestamo.fechaDevolucion) : '↩️ Ya devuelto'}</div>`
+    : '';
   return `
     <div class="item-row" data-action="open-mov" data-id="${m.id}">
       <div class="cat-icon" style="background:${bg}">${icon}</div>
       <div class="info" style="flex:1">
         <div class="title">${esc(m.concepto || m.categoria)}</div>
         <div class="meta">${esc(m.categoria)}</div>
+        ${prestamoLine}
       </div>
       <div class="amount ${m.tipo}">${m.tipo === 'ingreso' ? '+' : '−'} ${money(m.monto)}</div>
+    </div>`;
+}
+
+function estadoPrestamoTexto(fechaDevolucion) {
+  const dias = daysFromToday(fechaDevolucion);
+  if (dias === 0) return '⏳ Vence hoy';
+  if (dias < 0) return `⚠️ Vencido hace ${Math.abs(dias)} día(s)`;
+  return `⏳ Vence en ${dias} día(s)`;
+}
+
+function renderPrestamosTab() {
+  const pendientes = prestamosPendientes();
+  const historial = prestamosHistorial();
+  return `
+    <div class="card small">
+      🤝 Registra aquí el dinero que prestas o que te prestan. No cuenta como gasto/ingreso de consumo en "Por categoría", pero sí afecta tu saldo disponible mientras está pendiente.
+    </div>
+    ${pendientes.length === 0 ? `
+      <div class="empty-state">
+        <span class="emoji">🤝</span>
+        <p>No tienes préstamos pendientes.</p>
+        <p>Toca + y elige "Préstamo" para registrar uno.</p>
+      </div>` : `
+      <div class="section-title">Pendientes</div>
+      <div class="list">${pendientes.map(prestamoRowHTML).join('')}</div>`}
+    ${historial.length ? `
+      <div class="section-title" data-action="toggle-historial-prestamos" style="cursor:pointer">
+        Historial (${historial.length}) ${nav.showHistorialPrestamos ? '▲' : '▼'}
+      </div>
+      ${nav.showHistorialPrestamos ? `<div class="list">${historial.map(prestamoRowHTML).join('')}</div>` : ''}
+    ` : ''}
+  `;
+}
+
+function prestamoRowHTML(m) {
+  const direccion = m.prestamo.direccion;
+  const label = direccion === 'doy' ? 'Prestaste a' : 'Te prestó';
+  const estadoLine = m.prestamo.estado === 'pendiente' ? estadoPrestamoTexto(m.prestamo.fechaDevolucion) : `↩️ Devuelto el ${formatDateShort(m.prestamo.fechaDevueltoReal || m.fecha)}`;
+  return `
+    <div class="item-row" data-action="open-prestamo" data-id="${m.id}">
+      <div class="cat-icon" style="background:var(--info-bg)">🤝</div>
+      <div class="info" style="flex:1">
+        <div class="title">${label} ${esc(m.concepto || '—')}</div>
+        <div class="meta">${estadoLine}</div>
+      </div>
+      <div class="amount ${direccion === 'doy' ? 'gasto' : 'ingreso'}">${money(m.monto)}</div>
     </div>`;
 }
 
@@ -210,12 +280,15 @@ function closeSheet() {
 }
 backdropEl.addEventListener('click', closeSheet);
 
-let movDraft = null; // { id|null, tipo, monto, concepto, categoria, fecha }
+let movDraft = null; // { id|null, tipo: 'ingreso'|'gasto'|'prestamo', monto, concepto, categoria, fecha, direccion?, fechaDevolucion? }
 
 function openMovSheet(existing) {
+  const esPrestamoExistente = existing && existing.prestamo && !existing.prestamo.esRetorno;
   movDraft = existing
-    ? { id: existing.id, tipo: existing.tipo, monto: existing.monto, concepto: existing.concepto, categoria: existing.categoria, fecha: existing.fecha }
-    : { id: null, tipo: 'gasto', monto: '', concepto: '', categoria: CATEGORIAS.gasto[0], fecha: todayISO() };
+    ? (esPrestamoExistente
+        ? { id: existing.id, tipo: 'prestamo', direccion: existing.prestamo.direccion, monto: existing.monto, concepto: existing.concepto, fecha: existing.fecha, fechaDevolucion: existing.prestamo.fechaDevolucion }
+        : { id: existing.id, tipo: existing.tipo, monto: existing.monto, concepto: existing.concepto, categoria: existing.categoria, fecha: existing.fecha })
+    : { id: null, tipo: 'gasto', monto: '', concepto: '', categoria: CATEGORIAS.gasto[0], fecha: todayISO(), direccion: 'doy', fechaDevolucion: '' };
 
   openSheet(`
     <h2>${existing ? 'Editar movimiento' : 'Nuevo movimiento'}</h2>
@@ -223,13 +296,11 @@ function openMovSheet(existing) {
       <div class="segmented" id="mov-tipo">
         <button type="button" class="${movDraft.tipo === 'ingreso' ? 'active ingreso' : ''}" data-tipo="ingreso">💰 Ingreso</button>
         <button type="button" class="${movDraft.tipo === 'gasto' ? 'active gasto' : ''}" data-tipo="gasto">💳 Gasto</button>
+        <button type="button" class="${movDraft.tipo === 'prestamo' ? 'active prestamo' : ''}" data-tipo="prestamo">🤝 Préstamo</button>
       </div>
       <div class="field"><label for="mov-monto">Monto</label><input type="number" id="mov-monto" min="0" step="0.01" inputmode="decimal" value="${movDraft.monto}"></div>
-      <div class="field"><label for="mov-concepto">Concepto</label><input type="text" id="mov-concepto" placeholder="Ej. Salario, Supermercado" value="${esc(movDraft.concepto)}"></div>
-      <div class="field">
-        <label>Categoría</label>
-        <div class="chip-row" id="mov-categorias"></div>
-      </div>
+      <div class="field"><label for="mov-concepto" id="mov-concepto-label">Concepto</label><input type="text" id="mov-concepto" placeholder="Ej. Salario, Supermercado" value="${esc(movDraft.concepto)}"></div>
+      <div id="mov-dynamic"></div>
       <div class="field"><label for="mov-fecha">Fecha</label><input type="date" id="mov-fecha" value="${movDraft.fecha}"></div>
     </div>
     <div class="actions" style="margin-top:14px">
@@ -239,17 +310,46 @@ function openMovSheet(existing) {
     </div>
   `);
 
-  renderCategoriaChips();
+  renderMovDynamic();
 
   document.querySelectorAll('#mov-tipo button').forEach(btn => {
     btn.addEventListener('click', () => {
       movDraft.tipo = btn.dataset.tipo;
-      if (!CATEGORIAS[movDraft.tipo].includes(movDraft.categoria)) movDraft.categoria = CATEGORIAS[movDraft.tipo][0];
-      document.querySelectorAll('#mov-tipo button').forEach(b => { b.classList.remove('active', 'ingreso', 'gasto'); });
+      if (movDraft.tipo !== 'prestamo' && !CATEGORIAS[movDraft.tipo].includes(movDraft.categoria)) movDraft.categoria = CATEGORIAS[movDraft.tipo][0];
+      if (movDraft.tipo === 'prestamo' && !movDraft.direccion) movDraft.direccion = 'doy';
+      document.querySelectorAll('#mov-tipo button').forEach(b => { b.classList.remove('active', 'ingreso', 'gasto', 'prestamo'); });
       btn.classList.add('active', movDraft.tipo);
-      renderCategoriaChips();
+      renderMovDynamic();
     });
   });
+}
+
+function renderMovDynamic() {
+  const box = document.getElementById('mov-dynamic');
+  if (!box) return;
+  const label = document.getElementById('mov-concepto-label');
+  if (movDraft.tipo === 'prestamo') {
+    label.textContent = movDraft.direccion === 'recibo' ? '¿Quién te prestó?' : '¿A quién le prestaste?';
+    box.innerHTML = `
+      <div class="field">
+        <label>Dirección</label>
+        <div class="chip-row" id="mov-direccion">
+          <button type="button" class="chip ${movDraft.direccion === 'doy' ? 'active' : ''}" data-action="mov-direccion" data-dir="doy">🤝 Yo presto</button>
+          <button type="button" class="chip ${movDraft.direccion === 'recibo' ? 'active' : ''}" data-action="mov-direccion" data-dir="recibo">🤝 Me prestan</button>
+        </div>
+      </div>
+      <div class="field"><label for="mov-fecha-devolucion">Fecha en que ${movDraft.direccion === 'recibo' ? 'debes devolverlo' : 'te lo devuelven'}</label>
+        <input type="date" id="mov-fecha-devolucion" value="${movDraft.fechaDevolucion || ''}">
+      </div>`;
+  } else {
+    label.textContent = 'Concepto';
+    box.innerHTML = `
+      <div class="field">
+        <label>Categoría</label>
+        <div class="chip-row" id="mov-categorias"></div>
+      </div>`;
+    renderCategoriaChips();
+  }
 }
 
 function renderCategoriaChips() {
@@ -258,6 +358,25 @@ function renderCategoriaChips() {
   box.innerHTML = CATEGORIAS[movDraft.tipo].map(c =>
     `<button type="button" class="chip ${c === movDraft.categoria ? 'active' : ''}" data-action="mov-cat" data-cat="${esc(c)}">${CAT_ICON[c] || ''} ${esc(c)}</button>`
   ).join('');
+}
+
+function openPrestamoSheet(m) {
+  const direccion = m.prestamo.direccion;
+  const quien = direccion === 'doy' ? 'Prestaste a' : 'Te prestó';
+  const estadoLine = m.prestamo.estado === 'pendiente'
+    ? estadoPrestamoTexto(m.prestamo.fechaDevolucion)
+    : `↩️ Devuelto el ${formatDateShort(m.prestamo.fechaDevueltoReal || m.fecha)}`;
+  openSheet(`
+    <h2>${quien} ${esc(m.concepto || '—')}</h2>
+    <div class="sheet-sub">${money(m.monto)} · Prestado el ${formatDateShort(m.fecha)} · Devolución esperada: ${formatDateShort(m.prestamo.fechaDevolucion)}</div>
+    <p class="small muted">${estadoLine}</p>
+    <div class="actions">
+      ${m.prestamo.estado === 'pendiente' ? `<button class="btn btn-primary" data-action="marcar-devuelto" data-id="${m.id}">✅ Marcar como devuelto</button>` : ''}
+      <button class="btn btn-secondary" data-action="open-mov" data-id="${m.id}">✏️ Editar detalles</button>
+      <button class="btn btn-danger" data-action="delete-mov" data-id="${m.id}">🗑 Eliminar</button>
+      <button class="btn btn-ghost" data-action="close-sheet">Cerrar</button>
+    </div>
+  `);
 }
 
 /* ---------------- Acciones ---------------- */
@@ -283,13 +402,33 @@ document.addEventListener('click', (e) => {
       movDraft.categoria = el.dataset.cat;
       renderCategoriaChips();
       break;
+    case 'mov-direccion':
+      movDraft.direccion = el.dataset.dir;
+      renderMovDynamic();
+      break;
     case 'confirm-mov': {
       const monto = parseFloat(document.getElementById('mov-monto').value);
       const concepto = document.getElementById('mov-concepto').value.trim();
       const fecha = document.getElementById('mov-fecha').value;
       if (isNaN(monto) || monto <= 0) { showToast('Ingresa un monto válido'); break; }
       if (!fecha) { showToast('Selecciona una fecha'); break; }
-      if (movDraft.id) {
+
+      if (movDraft.tipo === 'prestamo') {
+        const fechaDevolucion = document.getElementById('mov-fecha-devolucion').value;
+        if (!fechaDevolucion) { showToast('Selecciona la fecha de devolución'); break; }
+        const tipoReal = movDraft.direccion === 'recibo' ? 'ingreso' : 'gasto';
+        const categoria = movDraft.direccion === 'recibo' ? 'Préstamo recibido' : 'Préstamo dado';
+        if (movDraft.id) {
+          const m = state.movimientos.find(x => x.id === movDraft.id);
+          m.tipo = tipoReal; m.monto = monto; m.concepto = concepto; m.categoria = categoria; m.fecha = fecha;
+          m.prestamo.direccion = movDraft.direccion; m.prestamo.fechaDevolucion = fechaDevolucion;
+        } else {
+          state.movimientos.push({
+            id: uid(), tipo: tipoReal, monto, concepto, categoria, fecha, createdAt: Date.now(),
+            prestamo: { direccion: movDraft.direccion, fechaDevolucion, estado: 'pendiente', esRetorno: false, vinculoId: null }
+          });
+        }
+      } else if (movDraft.id) {
         const m = state.movimientos.find(x => x.id === movDraft.id);
         m.tipo = movDraft.tipo; m.monto = monto; m.concepto = concepto; m.categoria = movDraft.categoria; m.fecha = fecha;
       } else {
@@ -310,6 +449,36 @@ document.addEventListener('click', (e) => {
         render();
         showToast('Movimiento eliminado');
       }
+      break;
+    }
+    case 'toggle-historial-prestamos':
+      nav.showHistorialPrestamos = !nav.showHistorialPrestamos;
+      render();
+      break;
+    case 'open-prestamo': {
+      const m = state.movimientos.find(x => x.id === el.dataset.id);
+      if (m) openPrestamoSheet(m);
+      break;
+    }
+    case 'marcar-devuelto': {
+      const m = state.movimientos.find(x => x.id === el.dataset.id);
+      if (!m) break;
+      m.prestamo.estado = 'devuelto';
+      m.prestamo.fechaDevueltoReal = todayISO();
+      const tipoRetorno = m.prestamo.direccion === 'doy' ? 'ingreso' : 'gasto';
+      const categoriaRetorno = m.prestamo.direccion === 'doy' ? 'Préstamo devuelto' : 'Préstamo pagado';
+      const retorno = {
+        id: uid(), tipo: tipoRetorno, monto: m.monto,
+        concepto: (m.concepto ? m.concepto + ' — ' : '') + 'préstamo devuelto',
+        categoria: categoriaRetorno, fecha: todayISO(), createdAt: Date.now(),
+        prestamo: { direccion: m.prestamo.direccion, fechaDevolucion: m.prestamo.fechaDevolucion, estado: 'devuelto', esRetorno: true, vinculoId: m.id }
+      };
+      m.prestamo.vinculoId = retorno.id;
+      state.movimientos.push(retorno);
+      saveState();
+      closeSheet();
+      render();
+      showToast('Préstamo marcado como devuelto');
       break;
     }
   }
