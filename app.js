@@ -108,7 +108,7 @@ function desgloseCategorias(monthKey, tipo) {
 function prestamosPendientes() {
   return state.movimientos
     .filter(m => m.prestamo && !m.prestamo.esRetorno && m.prestamo.estado === 'pendiente')
-    .sort((a, b) => a.prestamo.fechaDevolucion.localeCompare(b.prestamo.fechaDevolucion));
+    .sort((a, b) => (a.prestamo.fechaDevolucion || '9999-99-99').localeCompare(b.prestamo.fechaDevolucion || '9999-99-99'));
 }
 function prestamosHistorial() {
   return state.movimientos
@@ -190,6 +190,7 @@ function movRowHTML(m) {
 }
 
 function estadoPrestamoTexto(fechaDevolucion) {
+  if (!fechaDevolucion) return '🤝 Sin fecha de devolución definida';
   const dias = daysFromToday(fechaDevolucion);
   if (dias === 0) return '⏳ Vence hoy';
   if (dias < 0) return `⚠️ Vencido hace ${Math.abs(dias)} día(s)`;
@@ -338,7 +339,7 @@ function renderMovDynamic() {
           <button type="button" class="chip ${movDraft.direccion === 'recibo' ? 'active' : ''}" data-action="mov-direccion" data-dir="recibo">🤝 Me prestan</button>
         </div>
       </div>
-      <div class="field"><label for="mov-fecha-devolucion">Fecha en que ${movDraft.direccion === 'recibo' ? 'debes devolverlo' : 'te lo devuelven'}</label>
+      <div class="field"><label for="mov-fecha-devolucion">Fecha en que ${movDraft.direccion === 'recibo' ? 'debes devolverlo' : 'te lo devuelven'} (opcional)</label>
         <input type="date" id="mov-fecha-devolucion" value="${movDraft.fechaDevolucion || ''}">
       </div>`;
   } else {
@@ -366,9 +367,10 @@ function openPrestamoSheet(m) {
   const estadoLine = m.prestamo.estado === 'pendiente'
     ? estadoPrestamoTexto(m.prestamo.fechaDevolucion)
     : `↩️ Devuelto el ${formatDateShort(m.prestamo.fechaDevueltoReal || m.fecha)}`;
+  const devolucionTxt = m.prestamo.fechaDevolucion ? formatDateShort(m.prestamo.fechaDevolucion) : 'sin fecha definida';
   openSheet(`
     <h2>${quien} ${esc(m.concepto || '—')}</h2>
-    <div class="sheet-sub">${money(m.monto)} · Prestado el ${formatDateShort(m.fecha)} · Devolución esperada: ${formatDateShort(m.prestamo.fechaDevolucion)}</div>
+    <div class="sheet-sub">${money(m.monto)} · Prestado el ${formatDateShort(m.fecha)} · Devolución esperada: ${devolucionTxt}</div>
     <p class="small muted">${estadoLine}</p>
     <div class="actions">
       ${m.prestamo.estado === 'pendiente' ? `<button class="btn btn-primary" data-action="marcar-devuelto" data-id="${m.id}">✅ Marcar como devuelto</button>` : ''}
@@ -415,7 +417,6 @@ document.addEventListener('click', (e) => {
 
       if (movDraft.tipo === 'prestamo') {
         const fechaDevolucion = document.getElementById('mov-fecha-devolucion').value;
-        if (!fechaDevolucion) { showToast('Selecciona la fecha de devolución'); break; }
         const tipoReal = movDraft.direccion === 'recibo' ? 'ingreso' : 'gasto';
         const categoria = movDraft.direccion === 'recibo' ? 'Préstamo recibido' : 'Préstamo dado';
         if (movDraft.id) {
